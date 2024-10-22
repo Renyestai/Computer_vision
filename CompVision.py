@@ -22,20 +22,27 @@ def play_video(video_path):
 
     def update_frame():
         ret, frame = cap.read()
+        results = []
+
         if ret:
             # Конвертируем кадр в формат RGB для отображения в Tkinter
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            # Запуск модели YOLO для анализа текущего кадра
-            results = model(frame_rgb)
+            if enabled.get():
+                # Запуск модели YOLO для анализа текущего кадра
+                results = model(frame_rgb)
 
-            # Получаем кадр с нанесенными детекциями
-            annotated_frame = results[0].plot()
-            update_logs(results)  # Обновление логов
+                # Получаем кадр с нанесенными детекциями
+                annotated_frame = results[0].plot()
+                update_logs(results)  # Обновление логов
 
-            # Изменяем размер кадра для отображения в Tkinter
-            annotated_frame = cv2.resize(annotated_frame, (800, 600))
+                # Изменяем размер кадра для отображения в Tkinter
+                annotated_frame = cv2.resize(annotated_frame, (800, 600))
+            else:
+                annotated_frame = cv2.resize(frame_rgb,  (800, 600))
+
             img = ImageTk.PhotoImage(Image.fromarray(annotated_frame))
+
 
             # Обновляем Canvas новым изображением
             canvas.create_image(0, 0, anchor=tk.NW, image=img)
@@ -58,14 +65,14 @@ def update_logs(results):
     # Получаем найденные объекты
     detections = results[0].boxes
     logs = ""
-    
+
     # Собираем информацию о найденных повреждениях
     for detection in detections:
         if detection.conf >= 0.2:  # Пример порога уверенности
             class_id = int(detection.cls)  # ID класса
             confidence = detection.conf.item()  # Уверенность
             logs += f"Обнаружено: класс {class_id} с уверенностью {confidence:.2f}\n"
-    
+
     # Обновляем виджет Text с логами
     if logs:
         text_area.insert(tk.END, logs)
@@ -83,6 +90,11 @@ btn_upload.place(x=20, y=20)
 # Кнопка для анализа
 btn_detect = tk.Button(root, text="Обнаружить повреждения", command=detect_damage)
 btn_detect.place(x=20, y=70)
+
+# CheckBox для включения анализа
+enabled = tk.IntVar()
+enabled_checkbutton = tk.Checkbutton(text="Включить поиск повреждений", variable=enabled)
+enabled_checkbutton.pack(padx=10, pady=100, anchor=tk.NW)
 
 # Создаем Canvas для отображения видео
 canvas = Canvas(root, width=800, height=600)
