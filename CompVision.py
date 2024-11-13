@@ -3,80 +3,114 @@ from tkinter import filedialog, messagebox, Canvas
 import cv2
 from PIL import Image, ImageTk
 from ultralytics import YOLO
+import threading
+import queue
+import time
+import torch
 
-# Загружаем модель YOLO
-model = YOLO('weights/best.pt')  # Убедитесь, что путь указан правильно
+print("Поддержка CUDA в PyTorch:", torch.cuda.is_available())
+
+# Установка устройства: GPU (cuda), если доступен, иначе CPU
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = YOLO('weights/best.pt').to(device)
+
+# Очередь для передачи кадров между потоками
+frame_queue = queue.Queue(maxsize=1)
+
+# Флаг для остановки потоков и переключения состояния
+stop_flag = threading.Event()
+recognition_mode = threading.Event()  # Состояние распознавания
 
 def upload_video():
-    filepath = filedialog.askopenfilename(
-        filetypes=[("Video Files", "*.mp4;*.avi;*.mov")]
-    )
+    filepath = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.avi;*.mov")])
     if filepath:
-        # Очистка текстовой области при загрузке нового видео
         text_area.delete(1.0, tk.END)
-        play_video(filepath)
+        stop_flag.clear()
+        recognition_mode.clear()  # По умолчанию без распознавания
+        threading.Thread(target=process_video, args=(filepath,), daemon=True).start()
+        update_frame()  # Запуск обновления кадров интерфейса
 
-def play_video(video_path):
-    # Захват видео с помощью OpenCV
+def process_video(video_path):
     cap = cv2.VideoCapture(video_path)
-
-    def update_frame():
+    while not stop_flag.is_set():
         ret, frame = cap.read()
-        results = []
+        if not ret:
+            break
 
-        if ret:
-            # Конвертируем кадр в формат RGB для отображения в Tkinter
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Конвертируем кадр в RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            if enabled.get():
-                # Запуск модели YOLO для анализа текущего кадра
-                results = model(frame_rgb)
-
-                # Получаем кадр с нанесенными детекциями
-                annotated_frame = results[0].plot()
-                update_logs(results)  # Обновление логов
-
-                # Изменяем размер кадра для отображения в Tkinter
-                annotated_frame = cv2.resize(annotated_frame, (800, 600))
-            else:
-                annotated_frame = cv2.resize(frame_rgb,  (800, 600))
-
-            img = ImageTk.PhotoImage(Image.fromarray(annotated_frame))
-
-
-            # Обновляем Canvas новым изображением
-            canvas.create_image(0, 0, anchor=tk.NW, image=img)
-            canvas.image = img  # Обновляем изображение в зоне Canvas
-
-            # Продолжаем обновлять кадры
-            root.after(20, update_frame)
+        # Проверка состояния распознавания
+        if recognition_mode.is_set():
+            # Включен режим распознавания — добавляем результаты модели
+            results = model(frame_rgb)
+            annotated_frame = results[0].plot()
+            
+            # Обновляем логи
+            update_logs(results)
+            print("YOLO выполняется на устройстве:", next(model.parameters()).device)
         else:
-            cap.release()
-            messagebox.showinfo("Видео завершено", "Воспроизведение видео завершено")
+            # Режим без распознавания — обычный кадр
+            annotated_frame = frame_rgb
 
-    # Ожидание полной инициализации окна перед началом обновления кадра
-    root.after(200, update_frame)
+            # Добавляем небольшую задержку для стабилизации частоты кадров
+            time.sleep(0.03)
+
+        # Изменяем размер кадра
+        annotated_frame = cv2.resize(annotated_frame, (800, 600))
+
+        # Отправляем кадр в очередь для отображения
+        if not frame_queue.full():
+            frame_queue.put(annotated_frame)
+
+        # Включаем небольшую задержку, чтобы снизить нагрузку
+        time.sleep(0.01)
+    
+    cap.release()
+
+def update_frame():
+    # Проверка, есть ли кадры в очереди, и обновление Canvas
+    if not frame_queue.empty():
+        frame = frame_queue.get()
+        img = ImageTk.PhotoImage(Image.fromarray(frame))
+        
+        # Обновляем Canvas новым изображением
+        canvas.create_image(0, 0, anchor=tk.NW, image=img)
+        canvas.image = img
+
+    # Продолжаем обновлять кадры каждые 10 миллисекунд
+    if not stop_flag.is_set():
+        root.after(20, update_frame)
+    else:
+        messagebox.showinfo("Видео завершено", "Воспроизведение видео завершено")
+
+def toggle_recognition():
+    # Переключение состояния между простым выводом и распознаванием
+    if enabled.get():
+        recognition_mode.set()  # Включаем распознавание
+    else:
+        recognition_mode.clear()  # Отключаем распознавание
 
 def detect_damage():
-    # Функция анализа изображения на предмет повреждений
     messagebox.showinfo("Результат", "Анализ завершен!")
 
 def update_logs(results):
-    # Получаем найденные объекты
     detections = results[0].boxes
     logs = ""
-
-    # Собираем информацию о найденных повреждениях
+    
     for detection in detections:
-        if detection.conf >= 0.2:  # Пример порога уверенности
-            class_id = int(detection.cls)  # ID класса
-            confidence = detection.conf.item()  # Уверенность
+        if detection.conf >= 0.2:
+            class_id = int(detection.cls)
+            confidence = detection.conf.item()
             logs += f"Обнаружено: класс {class_id} с уверенностью {confidence:.2f}\n"
 
-    # Обновляем виджет Text с логами
     if logs:
         text_area.insert(tk.END, logs)
-        text_area.see(tk.END)  # Прокручиваем текст вниз
+        text_area.see(tk.END)
+
+def on_close():
+    stop_flag.set()  # Устанавливаем флаг остановки
+    root.destroy()   # Закрываем окно
 
 # Создание главного окна
 root = tk.Tk()
@@ -93,16 +127,19 @@ btn_detect.place(x=20, y=70)
 
 # CheckBox для включения анализа
 enabled = tk.IntVar()
-enabled_checkbutton = tk.Checkbutton(text="Включить поиск повреждений", variable=enabled)
+enabled_checkbutton = tk.Checkbutton(text="Включить поиск повреждений", variable=enabled, command=toggle_recognition)
 enabled_checkbutton.pack(padx=10, pady=100, anchor=tk.NW)
 
 # Создаем Canvas для отображения видео
 canvas = Canvas(root, width=800, height=600)
-canvas.place(relx=1.0, rely=0.0, anchor=tk.NE)  # Располагаем в окне с отступом
+canvas.place(relx=1.0, rely=0.0, anchor=tk.NE)
 
 # Создаем виджет Text для отображения логов
 text_area = tk.Text(root, height=20, width=40)
-text_area.place(x=20, y=120)  # Позиционируем виджет
+text_area.place(x=20, y=120)
+
+# Настраиваем закрытие окна с остановкой потока
+root.protocol("WM_DELETE_WINDOW", on_close)
 
 # Запуск интерфейса
 root.mainloop()
