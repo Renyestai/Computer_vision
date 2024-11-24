@@ -6,33 +6,72 @@ from ultralytics import YOLO
 import threading
 import queue
 import time
-import torch
 
-print("Поддержка CUDA в PyTorch:", torch.cuda.is_available())
-
-# Установка устройства: GPU (cuda), если доступен, иначе CPU
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model = YOLO('weights/best.pt').to(device)
+# Загружаем модель YOLO
+model = YOLO('weights/best.pt')
+print(f"YOLO работает на: {model.device}")
 
 # Очередь для передачи кадров между потоками
 frame_queue = queue.Queue(maxsize=1)
-
-# Флаг для остановки потоков и переключения состояния
 stop_flag = threading.Event()
-recognition_mode = threading.Event()  # Состояние распознавания
+pause_flag = threading.Event()
+restart_flag = threading.Event()
+
+current_video_path = None  # Хранит путь к текущему видео
 
 def upload_video():
-    filepath = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4;*.avi;*.mov")])
+    global current_video_path
+    filepath = filedialog.askopenfilename(
+        filetypes=[("Video Files", "*.mp4;*.avi;*.mov")]
+    )
     if filepath:
-        text_area.delete(1.0, tk.END)
+        # Полная очистка перед загрузкой нового видео
+        stop_current_video()
+        text_area.delete(1.0, tk.END)  # Очистка логов
+        frame_queue.queue.clear()  # Очистка очереди кадров
         stop_flag.clear()
-        recognition_mode.clear()  # По умолчанию без распознавания
+        pause_flag.clear()
+        restart_flag.clear()
+        btn_pause_resume.config(text="Пауза")  # Сброс текста кнопки
+        current_video_path = filepath
         threading.Thread(target=process_video, args=(filepath,), daemon=True).start()
-        update_frame()  # Запуск обновления кадров интерфейса
+        update_frame()
+
+def stop_current_video():
+    """Останавливает текущее видео."""
+    stop_flag.set()  # Останавливаем текущий поток
+    time.sleep(0.1)  # Даем время потоку завершиться
+
+def restart_video():
+    """Перезапускает текущее видео с начала и очищает логи."""
+    global current_video_path
+    if current_video_path:
+        stop_current_video()
+        frame_queue.queue.clear()  # Очистка очереди кадров
+        text_area.delete(1.0, tk.END)  # Очищаем логи
+        stop_flag.clear()
+        pause_flag.clear()
+        restart_flag.clear()
+        btn_pause_resume.config(text="Пауза")  # Сброс текста кнопки
+        threading.Thread(target=process_video, args=(current_video_path,), daemon=True).start()
+        update_frame()
+    else:
+        messagebox.showwarning("Ошибка", "Видео не загружено. Загрузите видео для перезапуска.")
 
 def process_video(video_path):
     cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_delay = 1 / fps
+
     while not stop_flag.is_set():
+        if pause_flag.is_set():
+            time.sleep(0.1)  # Ожидаем, пока пауза не будет снята
+            continue
+
+        if restart_flag.is_set():
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Возвращаемся к первому кадру
+            restart_flag.clear()
+
         ret, frame = cap.read()
         if not ret:
             break
@@ -40,105 +79,102 @@ def process_video(video_path):
         # Конвертируем кадр в RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Проверка состояния распознавания
-        if recognition_mode.is_set():
-            # Включен режим распознавания — добавляем результаты модели
-            results = model(frame_rgb)
+        if enabled.get():
+            results = model(frame_rgb, conf=0.5)
             annotated_frame = results[0].plot()
-            
-            # Обновляем логи
             update_logs(results)
-            print("YOLO выполняется на устройстве:", next(model.parameters()).device)
         else:
-            # Режим без распознавания — обычный кадр
             annotated_frame = frame_rgb
-
-            # Добавляем небольшую задержку для стабилизации частоты кадров
-            time.sleep(0.03)
 
         # Изменяем размер кадра
         annotated_frame = cv2.resize(annotated_frame, (800, 600))
 
-        # Отправляем кадр в очередь для отображения
+        # Отправляем кадр в очередь
         if not frame_queue.full():
             frame_queue.put(annotated_frame)
 
-        # Включаем небольшую задержку, чтобы снизить нагрузку
-        time.sleep(0.01)
-    
+        elapsed_time = time.time() - time.time()
+        delay = max(0, frame_delay - elapsed_time)
+        time.sleep(delay)
+
     cap.release()
 
 def update_frame():
-    # Проверка, есть ли кадры в очереди, и обновление Canvas
     if not frame_queue.empty():
         frame = frame_queue.get()
         img = ImageTk.PhotoImage(Image.fromarray(frame))
-        
+
         # Обновляем Canvas новым изображением
         canvas.create_image(0, 0, anchor=tk.NW, image=img)
         canvas.image = img
 
-    # Продолжаем обновлять кадры каждые 10 миллисекунд
     if not stop_flag.is_set():
         root.after(20, update_frame)
     else:
-        messagebox.showinfo("Видео завершено", "Воспроизведение видео завершено")
-
-def toggle_recognition():
-    # Переключение состояния между простым выводом и распознаванием
-    if enabled.get():
-        recognition_mode.set()  # Включаем распознавание
-    else:
-        recognition_mode.clear()  # Отключаем распознавание
-
-def detect_damage():
-    messagebox.showinfo("Результат", "Анализ завершен!")
+        canvas.delete("all")  # Очистка Canvas при завершении видео
 
 def update_logs(results):
     detections = results[0].boxes
     logs = ""
-    
+
+    class_names = model.names
+
     for detection in detections:
-        if detection.conf >= 0.2:
-            class_id = int(detection.cls)
-            confidence = detection.conf.item()
-            logs += f"Обнаружено: класс {class_id} с уверенностью {confidence:.2f}\n"
+        class_id = int(detection.cls)
+        class_name = class_names[class_id]  # Название класса
+        confidence = detection.conf.item()
+        logs += f"Обнаружено: класс {class_name} с уверенностью {confidence:.2f}\n"
 
     if logs:
         text_area.insert(tk.END, logs)
         text_area.see(tk.END)
 
+def toggle_pause():
+    """Переключает паузу и изменяет текст кнопки."""
+    if pause_flag.is_set():
+        pause_flag.clear()
+        btn_pause_resume.config(text="Пауза")
+    else:
+        pause_flag.set()
+        btn_pause_resume.config(text="Продолжить")
+
 def on_close():
-    stop_flag.set()  # Устанавливаем флаг остановки
-    root.destroy()   # Закрываем окно
+    stop_flag.set()
+    root.destroy()
 
 # Создание главного окна
 root = tk.Tk()
 root.title("Обнаружение повреждений на дороге")
 root.geometry("1280x720")
+root.resizable(width=False, height=False)  
 
 # Кнопка для загрузки видео
 btn_upload = tk.Button(root, text="Загрузить видео", command=upload_video)
-btn_upload.place(x=20, y=20)
+btn_upload.place(x=20, y=40)
 
-# Кнопка для анализа
-btn_detect = tk.Button(root, text="Обнаружить повреждения", command=detect_damage)
-btn_detect.place(x=20, y=70)
+# Объединённая кнопка пауза/продолжить
+btn_pause_resume = tk.Button(root, text="Пауза", command=toggle_pause)
+btn_pause_resume.place(x=255, y=40)
+
+# Кнопка для перезапуска видео
+btn_restart = tk.Button(root, text="Запустить сначала", command=restart_video)
+btn_restart.place(x=130, y=40)
 
 # CheckBox для включения анализа
 enabled = tk.IntVar()
-enabled_checkbutton = tk.Checkbutton(text="Включить поиск повреждений", variable=enabled, command=toggle_recognition)
-enabled_checkbutton.pack(padx=10, pady=100, anchor=tk.NW)
+enabled_checkbutton = tk.Checkbutton(text="Включить поиск повреждений", variable=enabled)
+enabled_checkbutton.pack(padx=20, pady=90, anchor=tk.NW)
 
 # Создаем Canvas для отображения видео
-canvas = Canvas(root, width=800, height=600)
-canvas.place(relx=1.0, rely=0.0, anchor=tk.NE)
+canvas = Canvas(root, width=800, height=600, background="lightgray")
+canvas.place(x=450, y=40)
+#canvas.place(relx=1.0, rely=0.0, anchor=tk.NE)
 
 # Создаем виджет Text для отображения логов
-text_area = tk.Text(root, height=20, width=40)
-text_area.place(x=20, y=120)
+text_area = tk.Text(root, height=20, width=50)
+text_area.place(x=20, y=140)
 
-# Настраиваем закрытие окна с остановкой потока
+# Настраиваем закрытие окна
 root.protocol("WM_DELETE_WINDOW", on_close)
 
 # Запуск интерфейса
