@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 5
+names: ['obstructed_road_sign', 'off traffic light', 'pothole', 'road_sign', 'traffic light']
+
+roboflow:
+  workspace: ryyslin
+  project: road-pits
+  version: 4
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/ryyslin/road-pits/dataset/4

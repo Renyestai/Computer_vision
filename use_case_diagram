@@ -1,0 +1,23 @@
+// Use Case Diagram
+digraph {
+	User [label="Пользователь" color=lightblue shape=ellipse style=filled]
+	System [label="Видео-аналитика" color=lightgray shape=box style="rounded, filled"]
+	UC1 [label="Загрузить видео" shape=ellipse]
+	UC2 [label="Поставить на паузу" shape=ellipse]
+	UC3 [label="Изменить скорость" shape=ellipse]
+	UC4 [label="Анализировать кадры" shape=ellipse]
+	UC5 [label="Просмотреть логи" shape=ellipse]
+	UC6 [label="Перезапустить видео" shape=ellipse]
+	User -> UC1
+	User -> UC2
+	User -> UC3
+	User -> UC4
+	User -> UC5
+	User -> UC6
+	UC1 -> System
+	UC2 -> System
+	UC3 -> System
+	UC4 -> System
+	UC5 -> System
+	UC6 -> System
+}
